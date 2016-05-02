@@ -1,3 +1,12 @@
+// Very simple display triangle program, that allows you to rotate the
+// triangle around the Y axis.
+//
+// This program does NOT use a vertex shader to define the vertex colors.
+// Instead, it computes the colors in the display callback (using Blinn/Phong)
+// and passes those color values, one per vertex, to the vertex shader, which
+// passes them directly to the fragment shader. This achieves what is called
+// "gouraud shading".
+
 #ifdef __APPLE__
 #include <OpenGL/OpenGL.h>
 #include <GLUT/glut.h>
@@ -20,7 +29,7 @@ GLuint buffers[2];
 
 // camera position
 point4 eye;
-const point4 viewer = vec4(0.3, 0.0, 0.0, 0.0);
+const point4 viewer = vec4(0.0, 0.0, 0.0, 0.0);
 vec4 up;
 
 float theta = 0.0;  // rotation around the Y (up) axis
@@ -34,6 +43,15 @@ const float RMIN = 2.0;
 // Y axis constraint
 const float ZENITH = 175.0;
 const float NADIR = 5.0;
+
+// Bezier limits
+bool bezier_changed = false; // If vertices changed
+bool bezier_mode = false;
+const int MIN_DETAIL = 2;
+const int MAX_DETAIL = 20;
+unsigned int bezier_coarseness = 2; // Number of samples per degree
+
+vector<bezier_surf> surfaces;
 
 int NumVertices;
 point4 *vertices = NULL;
@@ -99,6 +117,75 @@ void loadOBJ(const char *file_name)
 	delete[] vert_norms;
 }
 
+void loadBezierVertsAndNorms() {
+	int n_verts = 0;
+	for (int i = 0; i < surfaces.size(); ++i) {
+		n_verts += 3 * ((2*surfaces[i].getUSamples(bezier_coarseness) - 2) *
+						(surfaces[i].getVSamples(bezier_coarseness) - 1)  );
+	}
+	NumVertices = n_verts;
+	
+	delete vertices;
+	delete norms;
+	vertices = new point4[NumVertices];
+	norms = new vec4[NumVertices];
+	
+	vector<point4> v_verts;
+	vector<vec4> v_norms;
+	for (int i = 0; i < surfaces.size(); ++i)
+		surfaces[i].sample(bezier_coarseness, v_verts, v_norms);
+	
+	// Triangulate
+	int to_skip = 0;
+	int vPos = 0;
+	for (int i = 0; i < surfaces.size(); ++i) {
+		int u_sam = surfaces[i].getUSamples(bezier_coarseness);
+		int v_sam = surfaces[i].getVSamples(bezier_coarseness);
+		
+		int verts_surf = u_sam*v_sam;
+		for (int v = 0; v < v_sam-1; v++)
+			for (int u = 0; u < u_sam-1; u++) {
+				vec4 tri1_1 = v_verts[to_skip + v*u_sam + u];
+				vec4 norm1_1 = v_norms[to_skip + v*u_sam + u];
+				vec4 tri1_2 = v_verts[to_skip + (v+1)*u_sam + u+1];
+				vec4 norm1_2 = v_norms[to_skip + (v+1)*u_sam + u+1];
+				vec4 tri1_3 = v_verts[to_skip + (v+1)*u_sam + u];
+				vec4 norm1_3 = v_norms[to_skip + (v+1)*u_sam + u];
+				
+				vec4 tri2_1 = tri1_2;
+				vec4 norm2_1 = norm1_2;
+				vec4 tri2_2 = tri1_1;
+				vec4 norm2_2 = norm1_1;
+				vec4 tri2_3 = v_verts[to_skip + v*u_sam + u+1];
+				vec4 norm2_3 = v_norms[to_skip + v*u_sam + u+1];
+				
+				vertices[vPos] = tri1_1;
+				vertices[vPos+1] = tri1_2;
+				vertices[vPos+2] = tri1_3;
+				vertices[vPos+3] = tri2_1;
+				vertices[vPos+4] = tri2_2;
+				vertices[vPos+5] = tri2_3;
+				
+				norms[vPos] = norm1_1;
+				norms[vPos+1] = norm1_2;
+				norms[vPos+2] = norm1_3;
+				norms[vPos+3] = norm2_1;
+				norms[vPos+4] = norm2_2;
+				norms[vPos+5] = norm2_3;
+				
+				vPos += 6;
+			}
+		to_skip += verts_surf;
+	}
+	
+}
+
+void loadBezier(const char *file_name) {
+	read_bezier_file(file_name, surfaces);
+	bezier_mode = true;
+	loadBezierVertsAndNorms();
+}
+
 // initialization: set up a Vertex Array Object (VAO) and then
 void init()
 {
@@ -159,6 +246,8 @@ void init()
 	view_pos = glGetUniformLocation(program, "view_pos");
 	ctm = glGetUniformLocation(program, "ctm");
 	ptm = glGetUniformLocation(program, "ptm");
+	
+	// pass light/material parameters
 	light_spec = glGetUniformLocation(program, "light_spec");
 	light_pos = glGetUniformLocation(program, "light_pos");
 	light_ambi = glGetUniformLocation(program, "light_ambi");
@@ -180,10 +269,6 @@ void display( void )
     // clear the window (with white) and clear the z-buffer (which isn't used
     // for this example).
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); 
-    
-    // based on where the mouse has moved to, construct a transformation matrix:
-	//vec3 scaleFactor(r);
-	//ctm = Translate(posx*.01,posy*.01,0.)* RotateY(theta)* RotateX(phi) * Scale(scaleFactor);
 	
 	GLfloat p = DegreesToRadians*phi;
 	GLfloat t = DegreesToRadians*theta;
@@ -206,7 +291,25 @@ void display( void )
 	
 	glBufferSubData( GL_ARRAY_BUFFER, 0, sizeof(vec4)*NumVertices, vertices );
 	glBufferSubData( GL_ARRAY_BUFFER, sizeof(vec4)*NumVertices, sizeof(vec4)*NumVertices, norms );
-    
+	
+	if (bezier_mode && bezier_changed) {
+		loadBezierVertsAndNorms();
+		glBufferData(GL_ARRAY_BUFFER, 2*sizeof(vec4)*NumVertices, NULL, GL_STATIC_DRAW);
+		
+		GLuint loc, loc2;
+		loc = glGetAttribLocation(program, "vPosition");
+		glEnableVertexAttribArray(loc);
+		glVertexAttribPointer(loc, 4, GL_FLOAT, GL_FALSE, 0, BUFFER_OFFSET(0));
+		
+		loc2 = glGetAttribLocation(program, "vNorm");
+		glEnableVertexAttribArray(loc2);
+		glVertexAttribPointer(loc2, 4, GL_FLOAT, GL_FALSE, 0, BUFFER_OFFSET(sizeof(vec4)*NumVertices));
+		
+		glBufferSubData( GL_ARRAY_BUFFER, 0, sizeof(vec4)*NumVertices, vertices );
+		glBufferSubData( GL_ARRAY_BUFFER, sizeof(vec4)*NumVertices, sizeof(vec4)*NumVertices, norms );
+	}
+	bezier_changed = false;
+	
     // draw the VAO:
     glDrawArrays(GL_TRIANGLES, 0, NumVertices);
 	
@@ -303,12 +406,29 @@ void mykey(unsigned char key, int mousex, int mousey)
 		r *= 1.1;
 		glutPostRedisplay();
 	}
+	
+	// < decreases detail
+	if (key == '<' && bezier_coarseness > MIN_DETAIL) {
+		bezier_coarseness--;
+		bezier_changed = true;
+		glutPostRedisplay();
+	}
+	
+	// > increases detail
+	if (key == '>' && bezier_coarseness < MAX_DETAIL) {
+		bezier_coarseness++;
+		bezier_changed = true;
+		glutPostRedisplay();
+	}
 }
 
 
 int main(int argc, char** argv)
 {
-	loadOBJ(argv[1]);
+	if (checkIfOBJFileType(argv[1]))
+		loadOBJ(argv[1]);
+	else
+		loadBezier(argv[1]);
 	
 	// std::cout << sizeof(points[0]) << ", " << sizeof(points) << endl;
 
