@@ -18,6 +18,34 @@ using namespace std;
 
 #define IM_DEBUGGING
 
+bool checkIfOBJFileType (const char *file) {
+	ifstream in;
+	in.open(file, ios::in);
+	char buffer[1025];
+	string cmd;
+	
+	bool fileType;
+	while (in.good()) {
+		in.getline(buffer,1024);
+		buffer[in.gcount()]=0;
+		
+		cmd="";
+		istringstream iss (buffer);
+		
+		iss >> cmd;
+		
+		if (cmd[0]=='#' || cmd.empty())
+			continue;
+		else if (cmd=="v" || cmd =="f")
+			fileType = true; // OBJ
+		else
+			fileType = false; // Bezier
+		break;
+	}
+	in.close();
+	return fileType;
+}
+
 void read_wavefront_file (
 						  const char *file,
 						  std::vector< int > &tris,
@@ -82,3 +110,44 @@ void read_wavefront_file (
 	std::cout << "found this many tris, verts: " << tris.size () / 3.0 << "  "  << verts.size () / 3.0 << std::endl;
 }
 
+void read_bezier_file(const char* file, vector<bezier_surf> &s) {
+	ifstream in(file);
+	char buffer[1025];
+	string cmd;
+	
+	int surfaces;
+	in.getline(buffer,1024);
+	buffer[in.gcount()]=0;
+	
+	istringstream iss;
+	iss.str(buffer);
+	iss >> surfaces;
+	
+	vector<double> points;
+	
+	for (int i = 0; i < surfaces; i++) {
+		points.clear();
+		int u, v;
+		in.getline(buffer,1024);
+		buffer[in.gcount()]=0;
+		iss.clear();
+		iss.str(buffer);
+		iss >> u >> v;
+		
+		for (int q = 0; q <= v; q++) {
+			in.getline(buffer,1024);
+			buffer[in.gcount()]=0;
+			iss.clear();
+			iss.str(buffer);
+			for (int p = 0; p <= u; p++) {
+				double x, y, z;
+				iss >> x >> y >> z;
+				points.push_back(x);
+				points.push_back(y);
+				points.push_back(z);
+			}
+		}
+		s.push_back(bezier_surf(points, u, v));
+	}
+	in.close();
+}
